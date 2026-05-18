@@ -99,7 +99,7 @@ Click the image to watch MiroFish's deep prediction of the lost ending based on 
 
 | Tool | Version | Description | Check Installation |
 |------|---------|-------------|-------------------|
-| **Node.js** | 18+ | Frontend runtime, includes npm | `node -v` |
+| **Node.js** | 20.19+ | Frontend runtime, includes npm | `node -v` |
 | **Python** | ≥3.11, ≤3.12 | Backend runtime | `python --version` |
 | **uv** | Latest | Python package manager | `uv --version` |
 
@@ -121,6 +121,10 @@ cp .env.example .env
 LLM_API_KEY=your_api_key
 LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 LLM_MODEL_NAME=qwen-plus
+APP_ENV=development
+SECRET_KEY=change_this_for_production
+FLASK_DEBUG=false
+MIROFISH_CORS_ORIGINS=http://localhost:3000,http://localhost:5173
 
 # Zep Cloud Configuration
 # Free monthly quota is sufficient for simple usage: https://app.getzep.com/
@@ -168,13 +172,13 @@ npm run frontend  # Start frontend only
 # 1. Configure environment variables (same as source deployment)
 cp .env.example .env
 
-# 2. Pull image and start
+# 2. Build the local production image and start
 docker compose up -d
 ```
 
-Reads `.env` from root directory by default, maps ports `3000 (frontend) / 5001 (backend)`
+Reads `.env` from the root directory and maps port `5001`. The production container serves both API routes and the built frontend through the backend Waitress server at `http://localhost:5001`.
 
-> Mirror address for faster pulling is provided as comments in `docker-compose.yml`, replace if needed.
+Uploads, tasks, and reports persist under `./backend/uploads`.
 
 ## 📬 Join the Conversation
 
