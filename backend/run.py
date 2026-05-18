@@ -4,6 +4,7 @@ MiroFish Backend 启动入口
 
 import os
 import sys
+from waitress import serve
 
 # 解决 Windows 控制台中文乱码问题：在所有导入之前设置 UTF-8 编码
 if sys.platform == 'win32':
@@ -38,11 +39,20 @@ def main():
     
     # 获取运行配置
     host = os.environ.get('FLASK_HOST', '0.0.0.0')
-    port = int(os.environ.get('FLASK_PORT', 5001))
+    port = int(os.environ.get('PORT') or os.environ.get('FLASK_PORT', 5001))
     debug = Config.DEBUG
     
-    # 启动服务
-    app.run(host=host, port=port, debug=debug, threaded=True)
+    # 开发环境保留 Flask 内建服务器，生产环境走 Waitress。
+    if debug:
+        app.run(host=host, port=port, debug=True, threaded=True)
+        return
+
+    serve(
+        app,
+        host=host,
+        port=port,
+        threads=int(os.environ.get('WAITRESS_THREADS', '8')),
+    )
 
 
 if __name__ == '__main__':

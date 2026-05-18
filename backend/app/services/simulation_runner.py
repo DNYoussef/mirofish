@@ -204,10 +204,7 @@ class SimulationRunner:
     """
     
     # 运行状态存储目录
-    RUN_STATE_DIR = os.path.join(
-        os.path.dirname(__file__),
-        '../../uploads/simulations'
-    )
+    RUN_STATE_DIR = Config.OASIS_SIMULATION_DATA_DIR
     
     # 脚本目录
     SCRIPTS_DIR = os.path.join(
@@ -1295,7 +1292,8 @@ class SimulationRunner:
         # WERKZEUG_RUN_MAIN=true 表示是 reloader 子进程
         # 如果不是 debug 模式，则没有这个环境变量，也需要注册
         is_reloader_process = os.environ.get('WERKZEUG_RUN_MAIN') == 'true'
-        is_debug_mode = os.environ.get('FLASK_DEBUG') == '1' or os.environ.get('WERKZEUG_RUN_MAIN') is not None
+        flask_debug = os.environ.get('FLASK_DEBUG', '').strip().lower()
+        is_debug_mode = flask_debug in {'1', 'true', 'yes', 'on'} or os.environ.get('WERKZEUG_RUN_MAIN') is not None
         
         # 在 debug 模式下，只在 reloader 子进程中注册；非 debug 模式下始终注册
         if is_debug_mode and not is_reloader_process:

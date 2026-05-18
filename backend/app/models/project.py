@@ -102,7 +102,7 @@ class ProjectManager:
     """项目管理器 - 负责项目的持久化存储和检索"""
     
     # 项目存储根目录
-    PROJECTS_DIR = os.path.join(Config.UPLOAD_FOLDER, 'projects')
+    PROJECTS_DIR = Config.PROJECTS_DIR
     
     @classmethod
     def _ensure_projects_dir(cls):

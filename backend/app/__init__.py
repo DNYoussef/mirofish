@@ -4,13 +4,15 @@ MiroFish Backend - Flask应用工厂
 
 import os
 import warnings
+from pathlib import Path
 
 # 抑制 multiprocessing resource_tracker 的警告（来自第三方库如 transformers）
 # 需要在所有其他导入之前设置
 warnings.filterwarnings("ignore", message=".*resource_tracker.*")
 
-from flask import Flask, request
+from flask import Flask, request, send_from_directory
 from flask_cors import CORS
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from .config import Config
 from .utils.logger import setup_logger, get_logger
@@ -18,8 +20,14 @@ from .utils.logger import setup_logger, get_logger
 
 def create_app(config_class=Config):
     """Flask应用工厂函数"""
-    app = Flask(__name__)
+    frontend_dist = Path(__file__).resolve().parents[2] / 'frontend' / 'dist'
+    app = Flask(
+        __name__,
+        static_folder=str(frontend_dist) if frontend_dist.exists() else None,
+        static_url_path='',
+    )
     app.config.from_object(config_class)
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1, x_prefix=1)
     
     # 设置JSON编码：确保中文直接显示（而不是 \uXXXX 格式）
     # Flask >= 2.3 使用 app.json.ensure_ascii，旧版本使用 JSON_AS_ASCII 配置
@@ -28,6 +36,7 @@ def create_app(config_class=Config):
     
     # 设置日志
     logger = setup_logger('mirofish')
+    config_class.ensure_storage_dirs()
     
     # 只在 reloader 子进程中打印启动信息（避免 debug 模式下打印两次）
     is_reloader_process = os.environ.get('WERKZEUG_RUN_MAIN') == 'true'
@@ -38,9 +47,10 @@ def create_app(config_class=Config):
         logger.info("=" * 50)
         logger.info("MiroFish Backend 启动中...")
         logger.info("=" * 50)
+        logger.info(f"Data root: {config_class.DATA_ROOT}")
     
     # 启用CORS
-    CORS(app, resources={r"/api/*": {"origins": "*"}})
+    CORS(app, resources={r"/api/*": {"origins": app.config['CORS_ORIGINS']}})
     
     # 注册模拟进程清理函数（确保服务器关闭时终止所有模拟进程）
     from .services.simulation_runner import SimulationRunner
@@ -72,6 +82,20 @@ def create_app(config_class=Config):
     @app.route('/health')
     def health():
         return {'status': 'ok', 'service': 'MiroFish Backend'}
+
+    @app.route('/', defaults={'path': ''})
+    @app.route('/<path:path>')
+    def frontend(path):
+        if path.startswith('api/') or path == 'api':
+            return {'error': 'Not found'}, 404
+
+        if frontend_dist.exists():
+            requested = frontend_dist / path if path else frontend_dist / 'index.html'
+            if path and requested.is_file():
+                return send_from_directory(str(frontend_dist), path)
+            return send_from_directory(str(frontend_dist), 'index.html')
+
+        return {'error': 'Frontend build missing'}, 503
     
     if should_log_startup:
         logger.info("MiroFish Backend 启动完成")
