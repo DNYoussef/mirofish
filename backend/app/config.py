@@ -131,6 +131,12 @@ class Config:
     # OASIS模拟配置
     OASIS_DEFAULT_MAX_ROUNDS = int(os.environ.get('OASIS_DEFAULT_MAX_ROUNDS', '10'))
     OASIS_SIMULATION_DATA_DIR = os.path.join(DATA_ROOT, 'simulations')
+    LLM_RATE_LIMIT_REQUESTS = int(os.environ.get('MIROFISH_LLM_RATE_LIMIT_REQUESTS', '5'))
+    LLM_RATE_LIMIT_WINDOW = int(os.environ.get('MIROFISH_LLM_RATE_LIMIT_WINDOW', '600'))
+    LLM_RATE_LIMIT_DB = os.environ.get(
+        'MIROFISH_LLM_RATE_LIMIT_DB',
+        os.path.join(DATA_ROOT, 'security', 'llm_rate_limits.sqlite3')
+    )
     
     # OASIS平台可用动作配置
     OASIS_TWITTER_ACTIONS = [

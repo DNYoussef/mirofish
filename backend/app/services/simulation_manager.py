@@ -7,6 +7,8 @@ OASIS模拟管理器
 import os
 import json
 import shutil
+import re
+import threading
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -19,6 +21,13 @@ from .oasis_profile_generator import OasisProfileGenerator, OasisAgentProfile
 from .simulation_config_generator import SimulationConfigGenerator, SimulationParameters
 
 logger = get_logger('mirofish.simulation')
+SAFE_PATH_COMPONENT_RE = re.compile(r'^[A-Za-z0-9_-]+$')
+
+
+def _safe_path_component(value: str, field_name: str) -> str:
+    if not isinstance(value, str) or not SAFE_PATH_COMPONENT_RE.fullmatch(value):
+        raise ValueError(f"Invalid {field_name}")
+    return value
 
 
 class SimulationStatus(str, Enum):
@@ -124,18 +133,31 @@ class SimulationManager:
     
     # 模拟数据存储目录
     SIMULATION_DATA_DIR = Config.OASIS_SIMULATION_DATA_DIR
+    _cache_lock = threading.RLock()
+    _shared_simulations: Dict[str, SimulationState] = {}
+    _shared_cache_dir: Optional[str] = None
     
     def __init__(self):
         # 确保目录存在
         os.makedirs(self.SIMULATION_DATA_DIR, exist_ok=True)
-        
-        # 内存中的模拟状态缓存
-        self._simulations: Dict[str, SimulationState] = {}
+
+        # Shared across short-lived manager instances so per-request managers
+        # do not throw away the state cache on every API call.
+        with self._cache_lock:
+            if self.__class__._shared_cache_dir != self.SIMULATION_DATA_DIR:
+                self.__class__._shared_simulations = {}
+                self.__class__._shared_cache_dir = self.SIMULATION_DATA_DIR
+            self._simulations = self.__class__._shared_simulations
     
-    def _get_simulation_dir(self, simulation_id: str) -> str:
+    def _get_simulation_dir(self, simulation_id: str, create: bool = True) -> str:
         """获取模拟数据目录"""
-        sim_dir = os.path.join(self.SIMULATION_DATA_DIR, simulation_id)
-        os.makedirs(sim_dir, exist_ok=True)
+        safe_simulation_id = _safe_path_component(simulation_id, "simulation_id")
+        base_dir = os.path.abspath(self.SIMULATION_DATA_DIR)
+        sim_dir = os.path.abspath(os.path.join(base_dir, safe_simulation_id))
+        if os.path.commonpath([base_dir, sim_dir]) != base_dir:
+            raise ValueError("Invalid simulation_id")
+        if create:
+            os.makedirs(sim_dir, exist_ok=True)
         return sim_dir
     
     def _save_simulation_state(self, state: SimulationState):
@@ -155,7 +177,7 @@ class SimulationManager:
         if simulation_id in self._simulations:
             return self._simulations[simulation_id]
         
-        sim_dir = self._get_simulation_dir(simulation_id)
+        sim_dir = self._get_simulation_dir(simulation_id, create=False)
         state_file = os.path.join(sim_dir, "state.json")
         
         if not os.path.exists(state_file):
@@ -480,6 +502,9 @@ class SimulationManager:
         if not state:
             raise ValueError(f"模拟不存在: {simulation_id}")
         
+        if platform not in {"reddit", "twitter"}:
+            raise ValueError("Invalid platform")
+
         sim_dir = self._get_simulation_dir(simulation_id)
         profile_path = os.path.join(sim_dir, f"{platform}_profiles.json")
         

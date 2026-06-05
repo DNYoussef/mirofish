@@ -1900,16 +1900,28 @@ class ReportManager:
     
     # 报告存储目录
     REPORTS_DIR = Config.REPORTS_DIR
+    REPORT_ID_RE = re.compile(r'^report_[A-Za-z0-9_-]{1,64}$')
     
     @classmethod
     def _ensure_reports_dir(cls):
         """确保报告根目录存在"""
         os.makedirs(cls.REPORTS_DIR, exist_ok=True)
+
+    @classmethod
+    def _validate_report_id(cls, report_id: str) -> str:
+        if not isinstance(report_id, str) or not cls.REPORT_ID_RE.fullmatch(report_id):
+            raise ValueError("Invalid report_id")
+        return report_id
     
     @classmethod
     def _get_report_folder(cls, report_id: str) -> str:
         """获取报告文件夹路径"""
-        return os.path.join(cls.REPORTS_DIR, report_id)
+        safe_report_id = cls._validate_report_id(report_id)
+        base_dir = os.path.abspath(cls.REPORTS_DIR)
+        report_dir = os.path.abspath(os.path.join(base_dir, safe_report_id))
+        if os.path.commonpath([base_dir, report_dir]) != base_dir:
+            raise ValueError("Invalid report_id")
+        return report_dir
     
     @classmethod
     def _ensure_report_folder(cls, report_id: str) -> str:
@@ -1973,7 +1985,15 @@ class ReportManager:
                 "has_more": 是否还有更多日志
             }
         """
-        log_path = cls._get_console_log_path(report_id)
+        try:
+            log_path = cls._get_console_log_path(report_id)
+        except ValueError:
+            return {
+                "logs": [],
+                "total_lines": 0,
+                "from_line": 0,
+                "has_more": False
+            }
         
         if not os.path.exists(log_path):
             return {
@@ -2031,7 +2051,15 @@ class ReportManager:
                 "has_more": 是否还有更多日志
             }
         """
-        log_path = cls._get_agent_log_path(report_id)
+        try:
+            log_path = cls._get_agent_log_path(report_id)
+        except ValueError:
+            return {
+                "logs": [],
+                "total_lines": 0,
+                "from_line": 0,
+                "has_more": False
+            }
         
         if not os.path.exists(log_path):
             return {
@@ -2227,7 +2255,10 @@ class ReportManager:
     @classmethod
     def get_progress(cls, report_id: str) -> Optional[Dict[str, Any]]:
         """获取报告生成进度"""
-        path = cls._get_progress_path(report_id)
+        try:
+            path = cls._get_progress_path(report_id)
+        except ValueError:
+            return None
         
         if not os.path.exists(path):
             return None
@@ -2242,7 +2273,10 @@ class ReportManager:
         
         返回所有已保存的章节文件信息
         """
-        folder = cls._get_report_folder(report_id)
+        try:
+            folder = cls._get_report_folder(report_id)
+        except ValueError:
+            return []
         
         if not os.path.exists(folder):
             return []
@@ -2445,7 +2479,10 @@ class ReportManager:
     @classmethod
     def get_report(cls, report_id: str) -> Optional[Report]:
         """获取报告"""
-        path = cls._get_report_path(report_id)
+        try:
+            path = cls._get_report_path(report_id)
+        except ValueError:
+            return None
         
         if not os.path.exists(path):
             # 兼容旧格式：检查直接存储在reports目录下的文件
@@ -2548,7 +2585,10 @@ class ReportManager:
         """删除报告（整个文件夹）"""
         import shutil
         
-        folder_path = cls._get_report_folder(report_id)
+        try:
+            folder_path = cls._get_report_folder(report_id)
+        except ValueError:
+            return False
         
         # 新格式：删除整个文件夹
         if os.path.exists(folder_path) and os.path.isdir(folder_path):

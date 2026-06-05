@@ -3,6 +3,8 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
@@ -25,6 +27,7 @@ def reload_config(monkeypatch, **env):
         'RAILWAY_SERVICE_ID',
         'RAILWAY_PUBLIC_DOMAIN',
         'SECRET_KEY',
+        'MIROFISH_API_KEY',
         'MIROFISH_CORS_ORIGINS',
         'CORS_ORIGINS',
     ):
@@ -153,3 +156,75 @@ def test_app_factory_health_and_api_cors(monkeypatch, tmp_path):
 
     assert allowed.headers.get('Access-Control-Allow-Origin') == 'https://allowed.example'
     assert denied.headers.get('Access-Control-Allow-Origin') is None
+
+    unauthenticated = client.get('/api/graph/project/list')
+    assert unauthenticated.status_code == 503
+    assert unauthenticated.json == {'error': 'API authentication is not configured'}
+
+    monkeypatch.setenv('MIROFISH_API_KEY', 'test-api-key')
+    missing_key = client.get('/api/graph/project/list')
+    assert missing_key.status_code == 401
+    assert missing_key.json == {'error': 'Authentication required'}
+
+    authenticated = client.get(
+        '/api/graph/project/list',
+        headers={'X-API-Key': 'test-api-key'},
+    )
+    assert authenticated.status_code == 404
+
+
+def test_project_manager_rejects_traversal_project_ids(monkeypatch, tmp_path):
+    from app.models.project import ProjectManager
+
+    projects_dir = tmp_path / "projects"
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    (outside_dir / "project.json").write_text("{}", encoding="utf-8")
+    (outside_dir / "extracted_text.txt").write_text("secret", encoding="utf-8")
+
+    monkeypatch.setattr(ProjectManager, "PROJECTS_DIR", str(projects_dir))
+
+    assert ProjectManager.get_project("../outside") is None
+    assert ProjectManager.delete_project("../outside") is False
+    assert ProjectManager.get_extracted_text("../outside") is None
+    assert ProjectManager.get_project_files("../outside") == []
+    assert outside_dir.exists()
+
+    with pytest.raises(ValueError, match="Invalid project_id"):
+        ProjectManager._get_project_dir("../outside")
+
+
+def test_report_manager_rejects_traversal_report_ids(monkeypatch, tmp_path):
+    zep_cloud_module = types.ModuleType('zep_cloud')
+    zep_cloud_client_module = types.ModuleType('zep_cloud.client')
+
+    class DummyZep:
+        pass
+
+    zep_cloud_module.InternalServerError = Exception
+    zep_cloud_module.EpisodeData = object
+    zep_cloud_module.EntityEdgeSourceTarget = object
+    zep_cloud_client_module.Zep = DummyZep
+    monkeypatch.setitem(sys.modules, 'zep_cloud', zep_cloud_module)
+    monkeypatch.setitem(sys.modules, 'zep_cloud.client', zep_cloud_client_module)
+
+    from app.services.report_agent import ReportManager
+
+    reports_dir = tmp_path / "reports"
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    (outside_dir / "meta.json").write_text("{}", encoding="utf-8")
+    (outside_dir / "progress.json").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(ReportManager, "REPORTS_DIR", str(reports_dir))
+
+    assert ReportManager.get_report("../outside") is None
+    assert ReportManager.get_progress("../outside") is None
+    assert ReportManager.get_generated_sections("../outside") == []
+    assert ReportManager.delete_report("../outside") is False
+    assert ReportManager.get_console_log("../outside")["logs"] == []
+    assert ReportManager.get_agent_log("../outside")["logs"] == []
+    assert outside_dir.exists()
+
+    with pytest.raises(ValueError, match="Invalid report_id"):
+        ReportManager._get_report_folder("../outside")

@@ -324,22 +324,13 @@ def _check_simulation_prepared(simulation_id: str) -> tuple:
                     profiles_data = json.load(f)
                     profiles_count = len(profiles_data) if isinstance(profiles_data, list) else 0
             
-            # 如果状态是preparing但文件已完成，自动更新状态为ready
-            if status == "preparing":
-                try:
-                    state_data["status"] = "ready"
-                    from datetime import datetime
-                    state_data["updated_at"] = datetime.now().isoformat()
-                    with open(state_file, 'w', encoding='utf-8') as f:
-                        json.dump(state_data, f, ensure_ascii=False, indent=2)
-                    logger.info(f"自动更新模拟状态: {simulation_id} preparing -> ready")
-                    status = "ready"
-                except Exception as e:
-                    logger.warning(f"自动更新状态失败: {e}")
-            
-            logger.info(f"模拟 {simulation_id} 检测结果: 已准备完成 (status={status}, config_generated={config_generated})")
+            # Read-only check: report ready when generated files exist, but do not rewrite state.json.
+            reported_status = "ready" if status == "preparing" else status
+
+            logger.info(f"模拟 {simulation_id} 检测结果: 已准备完成 (status={reported_status}, config_generated={config_generated})")
             return True, {
-                "status": status,
+                "status": reported_status,
+                "state_status": status,
                 "entities_count": state_data.get("entities_count", 0),
                 "profiles_count": profiles_count,
                 "entity_types": state_data.get("entity_types", []),

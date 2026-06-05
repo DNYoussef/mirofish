@@ -5,6 +5,7 @@
 
 import os
 import json
+import re
 import uuid
 import shutil
 from datetime import datetime
@@ -103,16 +104,33 @@ class ProjectManager:
     
     # 项目存储根目录
     PROJECTS_DIR = Config.PROJECTS_DIR
+    PROJECT_ID_RE = re.compile(r'^proj_[A-Za-z0-9_-]{1,64}$')
+
+    @classmethod
+    def reset_for_tests(cls, projects_dir: Optional[str] = None) -> None:
+        """Point project persistence at an isolated directory for tests."""
+        cls.PROJECTS_DIR = str(projects_dir) if projects_dir is not None else Config.PROJECTS_DIR
     
     @classmethod
     def _ensure_projects_dir(cls):
         """确保项目目录存在"""
         os.makedirs(cls.PROJECTS_DIR, exist_ok=True)
+
+    @classmethod
+    def _validate_project_id(cls, project_id: str) -> str:
+        if not isinstance(project_id, str) or not cls.PROJECT_ID_RE.fullmatch(project_id):
+            raise ValueError("Invalid project_id")
+        return project_id
     
     @classmethod
     def _get_project_dir(cls, project_id: str) -> str:
         """获取项目目录路径"""
-        return os.path.join(cls.PROJECTS_DIR, project_id)
+        safe_project_id = cls._validate_project_id(project_id)
+        base_dir = os.path.abspath(cls.PROJECTS_DIR)
+        project_dir = os.path.abspath(os.path.join(base_dir, safe_project_id))
+        if os.path.commonpath([base_dir, project_dir]) != base_dir:
+            raise ValueError("Invalid project_id")
+        return project_dir
     
     @classmethod
     def _get_project_meta_path(cls, project_id: str) -> str:
@@ -184,7 +202,10 @@ class ProjectManager:
         Returns:
             Project对象，如果不存在返回None
         """
-        meta_path = cls._get_project_meta_path(project_id)
+        try:
+            meta_path = cls._get_project_meta_path(project_id)
+        except ValueError:
+            return None
         
         if not os.path.exists(meta_path):
             return None
@@ -229,7 +250,10 @@ class ProjectManager:
         Returns:
             是否删除成功
         """
-        project_dir = cls._get_project_dir(project_id)
+        try:
+            project_dir = cls._get_project_dir(project_id)
+        except ValueError:
+            return False
         
         if not os.path.exists(project_dir):
             return False
@@ -274,14 +298,20 @@ class ProjectManager:
     @classmethod
     def save_extracted_text(cls, project_id: str, text: str) -> None:
         """保存提取的文本"""
-        text_path = cls._get_project_text_path(project_id)
+        try:
+            text_path = cls._get_project_text_path(project_id)
+        except ValueError:
+            return None
         with open(text_path, 'w', encoding='utf-8') as f:
             f.write(text)
     
     @classmethod
     def get_extracted_text(cls, project_id: str) -> Optional[str]:
         """获取提取的文本"""
-        text_path = cls._get_project_text_path(project_id)
+        try:
+            text_path = cls._get_project_text_path(project_id)
+        except ValueError:
+            return None
         
         if not os.path.exists(text_path):
             return None
@@ -292,7 +322,10 @@ class ProjectManager:
     @classmethod
     def get_project_files(cls, project_id: str) -> List[str]:
         """获取项目的所有文件路径"""
-        files_dir = cls._get_project_files_dir(project_id)
+        try:
+            files_dir = cls._get_project_files_dir(project_id)
+        except ValueError:
+            return []
         
         if not os.path.exists(files_dir):
             return []

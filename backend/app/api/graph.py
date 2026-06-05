@@ -6,6 +6,9 @@
 import os
 import traceback
 import threading
+import hashlib
+import sqlite3
+import time
 from flask import request, jsonify
 
 from . import graph_bp
@@ -21,6 +24,10 @@ from ..models.project import ProjectManager, ProjectStatus
 # 获取日志器
 logger = get_logger('mirofish.api')
 
+MIN_CHUNK_SIZE = 1
+MAX_CHUNK_SIZE = 20000
+MIN_CHUNK_OVERLAP = 0
+
 
 def allowed_file(filename: str) -> bool:
     """检查文件扩展名是否允许"""
@@ -28,6 +35,118 @@ def allowed_file(filename: str) -> bool:
         return False
     ext = os.path.splitext(filename)[1].lower().lstrip('.')
     return ext in Config.ALLOWED_EXTENSIONS
+
+
+def _coerce_int_field(value, field_name: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name} must be an integer")
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{field_name} must be an integer")
+
+
+def validate_chunk_config(chunk_size, chunk_overlap) -> tuple[int, int]:
+    """Validate graph text chunking parameters before split_text can loop."""
+    chunk_size = _coerce_int_field(chunk_size, "chunk_size")
+    chunk_overlap = _coerce_int_field(chunk_overlap, "chunk_overlap")
+
+    if chunk_size < MIN_CHUNK_SIZE or chunk_size > MAX_CHUNK_SIZE:
+        raise ValueError(f"chunk_size must be between {MIN_CHUNK_SIZE} and {MAX_CHUNK_SIZE}")
+    if chunk_overlap < MIN_CHUNK_OVERLAP:
+        raise ValueError("chunk_overlap must be zero or greater")
+    if chunk_overlap >= chunk_size:
+        raise ValueError("chunk_overlap must be less than chunk_size")
+
+    return chunk_size, chunk_overlap
+
+
+def _llm_rate_limit_key() -> str:
+    bearer = request.headers.get('Authorization', '')
+    supplied_api_key = request.headers.get('X-API-Key', '')
+    if bearer.startswith('Bearer '):
+        supplied_api_key = bearer.removeprefix('Bearer ').strip()
+
+    if supplied_api_key:
+        digest = hashlib.sha256(supplied_api_key.encode('utf-8')).hexdigest()
+        return f"api-key:{digest}"
+
+    return f"ip:{request.remote_addr or 'unknown'}"
+
+
+def _enforce_llm_rate_limit(scope: str):
+    limit = int(getattr(Config, 'LLM_RATE_LIMIT_REQUESTS', 5))
+    window_seconds = int(getattr(Config, 'LLM_RATE_LIMIT_WINDOW', 600))
+    if limit <= 0 or window_seconds <= 0:
+        return jsonify({
+            "success": False,
+            "error": "LLM rate limiter is misconfigured"
+        }), 503
+
+    db_path = getattr(
+        Config,
+        'LLM_RATE_LIMIT_DB',
+        os.path.join(Config.DATA_ROOT, 'security', 'llm_rate_limits.sqlite3')
+    )
+    now = time.time()
+    window_start = now - window_seconds
+    client_key = _llm_rate_limit_key()
+
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
+        with sqlite3.connect(db_path, timeout=5.0, isolation_level=None) as db:
+            db.execute("PRAGMA journal_mode=WAL")
+            db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS llm_rate_limits (
+                    client_key TEXT NOT NULL,
+                    scope TEXT NOT NULL,
+                    requested_at REAL NOT NULL
+                )
+                """
+            )
+            db.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_llm_rate_limits_key_scope_time
+                ON llm_rate_limits (client_key, scope, requested_at)
+                """
+            )
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("DELETE FROM llm_rate_limits WHERE requested_at <= ?", (window_start,))
+            row = db.execute(
+                """
+                SELECT COUNT(*), MIN(requested_at)
+                FROM llm_rate_limits
+                WHERE client_key = ? AND scope = ? AND requested_at > ?
+                """,
+                (client_key, scope, window_start),
+            ).fetchone()
+            current_count = int(row[0] or 0)
+            oldest_request = row[1]
+            retry_after = window_seconds
+            if oldest_request is not None:
+                retry_after = max(1, int(window_seconds - (now - float(oldest_request))))
+
+            if current_count >= limit:
+                db.commit()
+                return jsonify({
+                    "success": False,
+                    "error": "LLM endpoint rate limit exceeded",
+                    "retry_after": retry_after,
+                }), 429, {"Retry-After": str(retry_after)}
+
+            db.execute(
+                "INSERT INTO llm_rate_limits (client_key, scope, requested_at) VALUES (?, ?, ?)",
+                (client_key, scope, now),
+            )
+            db.commit()
+            return None
+    except sqlite3.Error:
+        logger.exception("LLM rate limiter storage unavailable")
+        return jsonify({
+            "success": False,
+            "error": "LLM rate limiter unavailable"
+        }), 503
 
 
 # ============== 项目管理接口 ==============
@@ -150,6 +269,9 @@ def generate_ontology():
         logger.info("=== 开始生成本体定义 ===")
         
         # 获取参数
+        if rate_limit_response := _enforce_llm_rate_limit("ontology_generate"):
+            return rate_limit_response
+
         simulation_requirement = request.form.get('simulation_requirement', '')
         project_name = request.form.get('project_name', 'Unnamed Project')
         additional_context = request.form.get('additional_context', '')
@@ -283,6 +405,9 @@ def build_graph():
         logger.info("=== 开始构建图谱 ===")
         
         # 检查配置
+        if rate_limit_response := _enforce_llm_rate_limit("graph_build"):
+            return rate_limit_response
+
         errors = []
         if not Config.ZEP_API_KEY:
             errors.append("ZEP_API_KEY未配置")
@@ -339,6 +464,13 @@ def build_graph():
         graph_name = data.get('graph_name', project.name or 'MiroFish Graph')
         chunk_size = data.get('chunk_size', project.chunk_size or Config.DEFAULT_CHUNK_SIZE)
         chunk_overlap = data.get('chunk_overlap', project.chunk_overlap or Config.DEFAULT_CHUNK_OVERLAP)
+        try:
+            chunk_size, chunk_overlap = validate_chunk_config(chunk_size, chunk_overlap)
+        except ValueError as exc:
+            return jsonify({
+                "success": False,
+                "error": str(exc)
+            }), 400
         
         # 更新项目配置
         project.chunk_size = chunk_size

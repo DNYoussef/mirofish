@@ -92,6 +92,14 @@ class TaskManager:
                     cls._instance._ensure_tasks_dir()
         return cls._instance
 
+    @classmethod
+    def reset_for_tests(cls, tasks_dir: Optional[str] = None) -> None:
+        """Reset singleton state and optionally point tests at an isolated task dir."""
+        with cls._lock:
+            if tasks_dir is not None:
+                cls.TASKS_DIR = str(tasks_dir)
+            cls._instance = None
+
     def _ensure_tasks_dir(self):
         os.makedirs(self.TASKS_DIR, exist_ok=True)
 

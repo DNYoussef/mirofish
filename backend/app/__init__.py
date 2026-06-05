@@ -10,12 +10,45 @@ from pathlib import Path
 # 需要在所有其他导入之前设置
 warnings.filterwarnings("ignore", message=".*resource_tracker.*")
 
-from flask import Flask, request, send_from_directory
+from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
+from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from .config import Config
 from .utils.logger import setup_logger, get_logger
+
+
+SENSITIVE_ERROR_KEYS = {'traceback', 'stack', 'stacktrace', 'exc_info'}
+
+
+def _strip_sensitive_error_fields(value):
+    if isinstance(value, dict):
+        return {
+            key: _strip_sensitive_error_fields(item)
+            for key, item in value.items()
+            if str(key).lower() not in SENSITIVE_ERROR_KEYS
+        }
+    if isinstance(value, list):
+        return [_strip_sensitive_error_fields(item) for item in value]
+    return value
+
+
+def _sanitize_json_error_response(app, response):
+    if not response.is_json:
+        return response
+
+    payload = response.get_json(silent=True)
+    if payload is None:
+        return response
+
+    sanitized = _strip_sensitive_error_fields(payload)
+    if sanitized == payload:
+        return response
+
+    response.set_data(app.json.dumps(sanitized))
+    response.mimetype = 'application/json'
+    return response
 
 
 def create_app(config_class=Config):
@@ -66,13 +99,46 @@ def create_app(config_class=Config):
         if request.content_type and 'json' in request.content_type:
             logger.debug(f"请求体: {request.get_json(silent=True)}")
     
+        if request.method == 'OPTIONS' or not request.path.startswith('/api/'):
+            return None
+
+        expected_api_key = os.environ.get('MIROFISH_API_KEY')
+        if not expected_api_key:
+            return {'error': 'API authentication is not configured'}, 503
+
+        bearer = request.headers.get('Authorization', '')
+        supplied_api_key = request.headers.get('X-API-Key', '')
+        if bearer.startswith('Bearer '):
+            supplied_api_key = bearer.removeprefix('Bearer ').strip()
+
+        if supplied_api_key != expected_api_key:
+            return {'error': 'Authentication required'}, 401
+
+        return None
+
     @app.after_request
     def log_response(response):
         logger = get_logger('mirofish.request')
+        response = _sanitize_json_error_response(app, response)
         logger.debug(f"响应: {response.status_code}")
         return response
     
-    # 注册蓝图
+    # Sanitize exception responses before route registration.
+    @app.errorhandler(Exception)
+    def handle_unexpected_error(error):
+        if isinstance(error, HTTPException):
+            return jsonify({
+                "success": False,
+                "error": error.description,
+            }), error.code
+
+        logger.exception("Unhandled API error")
+        return jsonify({
+            "success": False,
+            "error": "Internal server error",
+        }), 500
+
+    # Register API blueprints.
     from .api import graph_bp, simulation_bp, report_bp
     app.register_blueprint(graph_bp, url_prefix='/api/graph')
     app.register_blueprint(simulation_bp, url_prefix='/api/simulation')

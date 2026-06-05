@@ -10,6 +10,7 @@
 
 import os
 import json
+import secrets
 import time
 import uuid
 from typing import Dict, Any, Optional, List
@@ -20,6 +21,25 @@ from enum import Enum
 from ..utils.logger import get_logger
 
 logger = get_logger('mirofish.simulation_ipc')
+IPC_AUTH_TOKEN_FILE = ".ipc_auth_token"
+
+
+def _load_or_create_auth_token(simulation_dir: str) -> str:
+    os.makedirs(simulation_dir, exist_ok=True)
+    token_path = os.path.join(simulation_dir, IPC_AUTH_TOKEN_FILE)
+    if os.path.exists(token_path):
+        with open(token_path, 'r', encoding='utf-8') as f:
+            return f.read().strip()
+
+    token = secrets.token_urlsafe(32)
+    try:
+        fd = os.open(token_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            f.write(token)
+        return token
+    except FileExistsError:
+        with open(token_path, 'r', encoding='utf-8') as f:
+            return f.read().strip()
 
 
 class CommandType(str, Enum):
@@ -43,6 +63,7 @@ class IPCCommand:
     command_id: str
     command_type: CommandType
     args: Dict[str, Any]
+    auth_token: str = ""
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
     
     def to_dict(self) -> Dict[str, Any]:
@@ -50,6 +71,7 @@ class IPCCommand:
             "command_id": self.command_id,
             "command_type": self.command_type.value,
             "args": self.args,
+            "auth_token": self.auth_token,
             "timestamp": self.timestamp
         }
     
@@ -59,6 +81,7 @@ class IPCCommand:
             command_id=data["command_id"],
             command_type=CommandType(data["command_type"]),
             args=data.get("args", {}),
+            auth_token=data.get("auth_token", ""),
             timestamp=data.get("timestamp", datetime.now().isoformat())
         )
 
@@ -70,6 +93,7 @@ class IPCResponse:
     status: CommandStatus
     result: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
+    auth_token: str = ""
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
     
     def to_dict(self) -> Dict[str, Any]:
@@ -78,6 +102,7 @@ class IPCResponse:
             "status": self.status.value,
             "result": self.result,
             "error": self.error,
+            "auth_token": self.auth_token,
             "timestamp": self.timestamp
         }
     
@@ -88,6 +113,7 @@ class IPCResponse:
             status=CommandStatus(data["status"]),
             result=data.get("result"),
             error=data.get("error"),
+            auth_token=data.get("auth_token", ""),
             timestamp=data.get("timestamp", datetime.now().isoformat())
         )
 
@@ -109,6 +135,7 @@ class SimulationIPCClient:
         self.simulation_dir = simulation_dir
         self.commands_dir = os.path.join(simulation_dir, "ipc_commands")
         self.responses_dir = os.path.join(simulation_dir, "ipc_responses")
+        self.auth_token = _load_or_create_auth_token(simulation_dir)
         
         # 确保目录存在
         os.makedirs(self.commands_dir, exist_ok=True)
@@ -140,7 +167,8 @@ class SimulationIPCClient:
         command = IPCCommand(
             command_id=command_id,
             command_type=command_type,
-            args=args
+            args=args,
+            auth_token=self.auth_token
         )
         
         # 写入命令文件
@@ -160,6 +188,14 @@ class SimulationIPCClient:
                     with open(response_file, 'r', encoding='utf-8') as f:
                         response_data = json.load(f)
                     response = IPCResponse.from_dict(response_data)
+
+                    if not secrets.compare_digest(response.auth_token, self.auth_token):
+                        logger.warning(f"Rejecting unauthenticated IPC response: command_id={command_id}")
+                        try:
+                            os.remove(response_file)
+                        except OSError:
+                            pass
+                        continue
                     
                     # 清理命令和响应文件
                     try:
@@ -170,7 +206,7 @@ class SimulationIPCClient:
                     
                     logger.info(f"收到IPC响应: command_id={command_id}, status={response.status.value}")
                     return response
-                except (json.JSONDecodeError, KeyError) as e:
+                except (json.JSONDecodeError, KeyError, ValueError) as e:
                     logger.warning(f"解析响应失败: {e}")
             
             time.sleep(poll_interval)
@@ -302,6 +338,7 @@ class SimulationIPCServer:
         self.simulation_dir = simulation_dir
         self.commands_dir = os.path.join(simulation_dir, "ipc_commands")
         self.responses_dir = os.path.join(simulation_dir, "ipc_responses")
+        self.auth_token = _load_or_create_auth_token(simulation_dir)
         
         # 确保目录存在
         os.makedirs(self.commands_dir, exist_ok=True)
@@ -352,8 +389,16 @@ class SimulationIPCServer:
             try:
                 with open(filepath, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                return IPCCommand.from_dict(data)
-            except (json.JSONDecodeError, KeyError, OSError) as e:
+                command = IPCCommand.from_dict(data)
+                if not secrets.compare_digest(command.auth_token, self.auth_token):
+                    logger.warning(f"Rejecting unauthenticated IPC command: {filepath}")
+                    try:
+                        os.remove(filepath)
+                    except OSError:
+                        pass
+                    continue
+                return command
+            except (json.JSONDecodeError, KeyError, ValueError, OSError) as e:
                 logger.warning(f"读取命令文件失败: {filepath}, {e}")
                 continue
         
@@ -367,6 +412,7 @@ class SimulationIPCServer:
             response: IPC响应
         """
         response_file = os.path.join(self.responses_dir, f"{response.command_id}.json")
+        response.auth_token = self.auth_token
         with open(response_file, 'w', encoding='utf-8') as f:
             json.dump(response.to_dict(), f, ensure_ascii=False, indent=2)
         

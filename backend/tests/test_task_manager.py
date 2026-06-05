@@ -8,8 +8,7 @@ if str(BACKEND_ROOT) not in sys.path:
 
 
 def reset_task_manager(task_manager_module, tmp_path):
-    task_manager_module.TaskManager._instance = None
-    task_manager_module.TaskManager.TASKS_DIR = str(tmp_path)
+    task_manager_module.TaskManager.reset_for_tests(tmp_path)
     return task_manager_module.TaskManager()
 
 
@@ -20,7 +19,7 @@ def test_task_manager_persists_tasks(monkeypatch, tmp_path):
     task_id = manager.create_task("build-graph", {"project_id": "project-1"})
     manager.update_task(task_id, progress=75, message="almost done")
 
-    task_manager_module.TaskManager._instance = None
+    task_manager_module.TaskManager.reset_for_tests()
     restored = task_manager_module.TaskManager()
 
     task = restored.get_task(task_id)

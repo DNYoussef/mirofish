@@ -415,11 +415,22 @@ def download_report(report_id: str):
                 f.write(report.markdown_content)
                 temp_path = f.name
             
-            return send_file(
+            response = send_file(
                 temp_path,
                 as_attachment=True,
                 download_name=f"{report_id}.md"
             )
+
+            def cleanup_temp_file():
+                try:
+                    os.remove(temp_path)
+                except FileNotFoundError:
+                    pass
+                except OSError as cleanup_error:
+                    logger.warning(f"清理临时报告文件失败: {cleanup_error}")
+
+            response.call_on_close(cleanup_temp_file)
+            return response
         
         return send_file(
             md_path,
@@ -668,7 +679,13 @@ def get_single_section(report_id: str, section_index: int):
         }
     """
     try:
-        section_path = ReportManager._get_section_path(report_id, section_index)
+        try:
+            section_path = ReportManager._get_section_path(report_id, section_index)
+        except ValueError:
+            return jsonify({
+                "success": False,
+                "error": f"ç« èŠ‚ä¸å­˜åœ¨: section_{section_index:02d}.md"
+            }), 404
         
         if not os.path.exists(section_path):
             return jsonify({

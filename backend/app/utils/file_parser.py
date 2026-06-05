@@ -160,6 +160,20 @@ def split_text_into_chunks(
     Returns:
         文本块列表
     """
+    if isinstance(chunk_size, bool) or isinstance(overlap, bool):
+        raise ValueError("chunk_size and overlap must be integers")
+    try:
+        chunk_size = int(chunk_size)
+        overlap = int(overlap)
+    except (TypeError, ValueError):
+        raise ValueError("chunk_size and overlap must be integers")
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive")
+    if overlap < 0:
+        raise ValueError("overlap must be zero or greater")
+    if overlap >= chunk_size:
+        raise ValueError("overlap must be less than chunk_size")
+
     if len(text) <= chunk_size:
         return [text] if text.strip() else []
     
